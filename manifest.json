@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "DSU Spinner",
-  "description": "Spin to pick who talks next at Productivity Engineering stand-up, with Jira boards one click away.",
-  "version": "1.0.0",
+  "description": "Spin to pick who talks next at Productivity Engineering stand-up.",
+  "version": "1.1.0",
   "action": {
     "default_title": "Show/hide DSU Spinner (Alt+Shift+S)",
     "default_icon": {
@@ -27,13 +27,6 @@
     "service_worker": "background.js"
   },
   "permissions": ["storage", "activeTab", "scripting"],
-  "content_scripts": [
-    {
-      "matches": ["https://impact.atlassian.net/*"],
-      "js": ["overlay.js"],
-      "run_at": "document_idle"
-    }
-  ],
   "web_accessible_resources": [
     {
       "resources": ["spinner.html", "spinner.css", "spinner.js", "team.js", "icons/*"],

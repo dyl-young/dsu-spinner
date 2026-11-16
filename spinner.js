@@ -1,4 +1,4 @@
-import { TEAM, BOARDS, boardUrl } from './team.js';
+import { SQUADS, DEFAULT_TEAM } from './team.js';
 
 // Wheel palettes. Colours go by position on the wheel so neighbours never match.
 // ink is the label colour that reads best on that wedge. Change PALETTE to switch.
@@ -27,27 +27,32 @@ function wedgeColor(i, n) {
   if (n > 1 && i === n - 1 && (n - 1) % PALETTE.length === 0) return PALETTE[2];
   return PALETTE[i % PALETTE.length];
 }
-const STORAGE_KEY = 'dsuSpinnerState';
+const STATE_KEY = 'dsuSpinnerState';
+const TEAM_KEY = 'dsuSpinnerTeam';
 const EMBEDDED = window.top !== window;
 // 'dock' for the small docked/floating panel, 'big' for the expanded panel or a full tab.
 let layout = EMBEDDED ? 'dock' : 'big';
 const teamOpen = () => !!state.teamOpen?.[layout];
-const people = TEAM.map((p) => ({ ...p }));
-const byId = Object.fromEntries(people.map((p) => [p.id, p]));
+let people = [];
+let byId = {};
+function setPeople(list) {
+  people = list.filter((p) => SQUADS.some((s) => s.id === p.squad)).map((p) => ({ ...p }));
+  byId = Object.fromEntries(people.map((p) => [p.id, p]));
+}
 
 // ---------- storage (chrome.storage as an extension, localStorage otherwise) ----------
 const hasChromeStorage = typeof chrome !== 'undefined' && chrome.storage?.local;
 const store = {
-  async get() {
+  async get(key) {
     try {
-      if (hasChromeStorage) return (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY];
-      return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+      if (hasChromeStorage) return (await chrome.storage.local.get(key))[key];
+      return JSON.parse(localStorage.getItem(key) || 'null');
     } catch { return null; }
   },
-  async set(value) {
+  async set(key, value) {
     try {
-      if (hasChromeStorage) await chrome.storage.local.set({ [STORAGE_KEY]: value });
-      else localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
+      if (hasChromeStorage) await chrome.storage.local.set({ [key]: value });
+      else localStorage.setItem(key, JSON.stringify(value));
     } catch { /* state just won't persist */ }
   },
 };
@@ -61,20 +66,35 @@ const freshState = (prev = {}) => ({
 });
 let state = freshState();
 
-async function load() {
-  const saved = await store.get();
-  state = saved && saved.date === todayKey() ? { ...freshState(saved), ...saved } : freshState(saved || {});
-  if (state.current && !byId[state.current]) state.current = null;
+// Forget today's progress for anyone no longer on the team.
+function pruneState() {
+  const known = (id) => !!byId[id];
+  state.away = state.away.filter(known);
+  state.done = state.done.filter(known);
+  if (state.current && !known(state.current)) state.current = null;
 }
-const save = () => store.set(state);
+
+async function load() {
+  const [saved, team] = await Promise.all([store.get(STATE_KEY), store.get(TEAM_KEY)]);
+  setPeople(Array.isArray(team) ? team : DEFAULT_TEAM);
+  state = saved && saved.date === todayKey() ? { ...freshState(saved), ...saved } : freshState(saved || {});
+  pruneState();
+}
+const save = () => store.set(STATE_KEY, state);
+const saveTeam = () => store.set(TEAM_KEY, people.map(({ id, name, squad }) => ({ id, name, squad })));
 
 if (hasChromeStorage) {
   // Keep spinners open in other tabs in sync.
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local' || !changes[STORAGE_KEY] || spinning) return;
-    const next = changes[STORAGE_KEY].newValue;
-    if (!next || JSON.stringify(next) === JSON.stringify(state)) return;
-    state = next;
+    if (area !== 'local') return;
+    if (changes[TEAM_KEY]) {
+      setPeople(changes[TEAM_KEY].newValue || DEFAULT_TEAM);
+      if (settingsOpen) renderSettings();
+    }
+    if (spinning || (!changes[TEAM_KEY] && !changes[STATE_KEY])) return;
+    const next = changes[STATE_KEY]?.newValue;
+    if (next && JSON.stringify(next) !== JSON.stringify(state)) state = next;
+    pruneState();
     if (!state.current) hideResult();
     render();
   });
@@ -89,32 +109,7 @@ const pointer = $('pointer');
 
 const onWheel = () => people.filter((p) => !state.away.includes(p.id) && !state.done.includes(p.id) && p.id !== state.current);
 const present = () => people.filter((p) => !state.away.includes(p.id));
-
-// ---------- navigation ----------
 const post = (msg) => window.parent.postMessage({ source: 'dsu-spinner', ...msg }, '*');
-// target: { board, person? }. On Jira, the overlay opens the board and clicks the
-// person's avatar in the board's assignee filter (the board ignores ?assignee=).
-function personTarget(p, boardKey = p.boards[0]) {
-  return { board: BOARDS[boardKey].url, person: { accountId: p.accountId, name: p.jiraName || p.fullName } };
-}
-function openTarget(target, url) {
-  if (EMBEDDED) post({ type: 'navigate', url, target });
-  else window.open(url, '_blank', 'noopener');
-}
-function openUrl(url) {
-  if (EMBEDDED) post({ type: 'navigate', url });
-  else window.open(url, '_blank', 'noopener');
-}
-function linkTo(a, url, target) {
-  a.href = url;
-  a.target = '_blank';
-  a.rel = 'noopener';
-  a.addEventListener('click', (e) => {
-    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return; // browser opens a new tab
-    e.preventDefault();
-    target ? openTarget(target, url) : openUrl(url);
-  });
-}
 
 // ---------- sound ----------
 // Chrome only lets audio start from a user gesture, and inside Jira's page the panel
@@ -365,11 +360,15 @@ function showResult(person) {
   const i = wheelPeople.indexOf(person);
   el.style.setProperty('--winner', wedgeColor(i, wheelPeople.length).bg);
   $('resultName').textContent = person.name;
-  $('resultJira').href = boardUrl(person.boards[0], person.accountId);
   el.hidden = false;
 }
 function hideResult() { $('result').hidden = true; }
 const resultOpen = () => !$('result').hidden;
+// "Start": close the popup and leave them up as the current speaker.
+function startCurrent() {
+  hideResult();
+  render({ keepWheel: true });
+}
 
 function markDone(id, { silent = false } = {}) {
   if (!id) return;
@@ -387,7 +386,7 @@ function setAway(id, away) {
   save();
   render();
 }
-// "Not here": take them off the wheel and go again straight away.
+// "Skip": take them off the wheel and go again straight away.
 function skipCurrent() {
   if (!state.current) return;
   setAway(state.current, true);
@@ -409,8 +408,11 @@ function render({ keepWheel = false } = {}) {
   const now = $('now');
   now.hidden = !cur || resultOpen() || spinning;
   if (cur) {
+    // Once their wedge is off the wheel, keep the colour they landed on.
     const i = wheelPeople.indexOf(cur);
-    now.style.setProperty('--c', i >= 0 ? wedgeColor(i, wheelPeople.length).bg : 'var(--muted)');
+    if (i >= 0) now.style.setProperty('--c', wedgeColor(i, wheelPeople.length).bg);
+    else if (now.dataset.id !== cur.id) now.style.setProperty('--c', 'var(--muted)');
+    now.dataset.id = cur.id;
     $('nowName').textContent = cur.name;
   }
 
@@ -422,7 +424,7 @@ function render({ keepWheel = false } = {}) {
   $('app').classList.toggle('team-collapsed', !teamOpen());
   $('teamBtn').setAttribute('aria-expanded', String(teamOpen()));
   $('teamBtn').title = teamOpen() ? 'Hide team (T)' : 'Show team (T)';
-  $('muteBtn').innerHTML = state.muted ? ICON_MUTED : ICON_SOUND;
+  $('soundToggle').setAttribute('aria-checked', String(!state.muted));
 
   renderRoster();
   drawWheel();
@@ -431,18 +433,16 @@ function render({ keepWheel = false } = {}) {
 function renderRoster() {
   const root = $('roster');
   root.textContent = '';
-  for (const key of Object.keys(BOARDS)) {
-    const members = people.filter((p) => p.boards[0] === key);
+  for (const squad of SQUADS) {
+    const members = people.filter((p) => p.squad === squad.id);
     if (!members.length) continue;
     const col = document.createElement('div');
     const head = document.createElement('div');
     head.className = 'squad-head' + (members.every((p) => state.away.includes(p.id)) ? ' away' : '');
-    const link = document.createElement('a');
-    link.className = 'squad-name';
-    link.textContent = BOARDS[key].name;
-    link.title = `${BOARDS[key].name} board`;
-    linkTo(link, BOARDS[key].url);
-    head.append(link, squadToggle(BOARDS[key].name, members));
+    const title = document.createElement('span');
+    title.className = 'squad-name';
+    title.textContent = squad.name;
+    head.append(title, squadToggle(squad.name, members));
     col.append(head);
     for (const p of members) col.append(personRow(p));
     root.append(col);
@@ -477,21 +477,7 @@ function personRow(p) {
   const row = document.createElement('div');
   row.className = 'person' + (away ? ' away' : '') + (doneIdx >= 0 ? ' done' : '') + (state.current === p.id ? ' current' : '');
 
-  const name = document.createElement('span');
-  name.className = 'pname';
-  const a = document.createElement('a');
-  a.textContent = p.name;
-  a.title = `${p.fullName}'s ${BOARDS[p.boards[0]].name} board`;
-  linkTo(a, boardUrl(p.boards[0], p.accountId), personTarget(p));
-  name.append(a);
-  for (const b of p.boards.slice(1)) {
-    const alt = document.createElement('a');
-    alt.className = 'alt';
-    alt.textContent = b;
-    alt.title = `${p.fullName}'s ${BOARDS[b].name} board`;
-    linkTo(alt, boardUrl(b, p.accountId), personTarget(p, b));
-    name.append(alt);
-  }
+  const name = nameLabel(p);
   if (doneIdx >= 0) {
     const no = document.createElement('span');
     no.className = 'order-no';
@@ -512,47 +498,127 @@ function personRow(p) {
   return row;
 }
 
+function nameLabel(p) {
+  const label = document.createElement('span');
+  label.className = 'pname';
+  const who = document.createElement('span');
+  who.className = 'who';
+  who.textContent = p.name;
+  label.append(who);
+  return label;
+}
+
+// ---------- settings ----------
+let settingsOpen = false;
+function toggleSettings(open = !settingsOpen) {
+  if (open && spinning) return;
+  settingsOpen = open;
+  $('app').classList.toggle('settings-open', open);
+  $('settingsBtn').setAttribute('aria-pressed', String(open));
+  $('settingsBtn').title = open ? 'Back to the wheel' : 'Settings';
+  if (open) renderSettings();
+}
+
+const slug = (name) => name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+function addPerson(name, squad) {
+  const base = slug(name) || 'person';
+  let id = base;
+  for (let n = 2; byId[id]; n++) id = `${base}-${n}`;
+  setPeople([...people, { id, name, squad }]);
+  saveTeam();
+  render();
+}
+function removePerson(id) {
+  setPeople(people.filter((p) => p.id !== id));
+  pruneState();
+  if (!state.current) hideResult();
+  save();
+  saveTeam();
+  render();
+  renderSettings();
+}
+
+function renderSettings(focusSquad) {
+  const root = $('settingsSquads');
+  root.textContent = '';
+  for (const squad of SQUADS) {
+    const col = document.createElement('div');
+    const head = document.createElement('div');
+    head.className = 'squad-head';
+    const title = document.createElement('span');
+    title.className = 'squad-name';
+    title.textContent = squad.name;
+    head.append(title);
+    col.append(head);
+    for (const p of people.filter((x) => x.squad === squad.id)) {
+      const row = document.createElement('div');
+      row.className = 'person';
+      const remove = document.createElement('button');
+      remove.className = 'remove-btn';
+      remove.title = `Remove ${p.name}`;
+      remove.setAttribute('aria-label', remove.title);
+      remove.innerHTML = ICON_REMOVE;
+      remove.onclick = () => removePerson(p.id);
+      row.append(nameLabel(p), remove);
+      col.append(row);
+    }
+    col.append(addForm(squad));
+    root.append(col);
+  }
+  if (focusSquad) root.querySelector(`[data-squad="${focusSquad}"] input`)?.focus();
+}
+
+function addForm(squad) {
+  const form = document.createElement('form');
+  form.className = 'add-person';
+  form.dataset.squad = squad.id;
+  const input = document.createElement('input');
+  input.placeholder = `Add to ${squad.name}`;
+  input.setAttribute('aria-label', input.placeholder);
+  input.maxLength = 24;
+  input.autocomplete = 'off';
+  input.oninput = () => input.setCustomValidity('');
+  const add = document.createElement('button');
+  add.className = 'text-btn strong';
+  add.textContent = 'Add';
+  form.append(input, add);
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const name = input.value.trim().replace(/\s+/g, ' ');
+    if (!name) return;
+    if (people.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
+      input.setCustomValidity(`${name} is already on the team`);
+      input.reportValidity();
+      return;
+    }
+    addPerson(name, squad.id);
+    renderSettings(squad.id);
+  };
+  return form;
+}
+
+const ICON_REMOVE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12"/><path d="M18 6L6 18"/></svg>';
 const ICON_MINIMISE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 12h12"/></svg>';
 const ICON_RESTORE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2.5"/></svg>';
-const ICON_SOUND = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>';
-const ICON_MUTED = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4V5z"/><path d="m21 9-5 6"/><path d="m16 9 5 6"/></svg>';
-
 // ---------- wiring ----------
-const openCurrentBoard = () => {
-  const p = byId[state.current];
-  if (!p) return;
-  hideResult();
-  render({ keepWheel: true });
-  openTarget(personTarget(p), boardUrl(p.boards[0], p.accountId));
-};
 const toggleTeam = () => {
   state.teamOpen = { dock: false, big: true, ...state.teamOpen, [layout]: !teamOpen() };
   save();
   render({ keepWheel: true });
 };
-let toastTimer;
-function showToast(text) {
-  const el = $('toast');
-  el.textContent = text;
-  el.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.hidden = true; }, 4000);
-}
 const toggleMute = () => { state.muted = !state.muted; save(); render({ keepWheel: true }); };
 const reset = () => { state = freshState(state); save(); hideResult(); render(); };
 
 spinBtn.addEventListener('click', spin);
-$('resultDone').addEventListener('click', () => markDone(state.current));
+$('resultStart').addEventListener('click', startCurrent);
 $('resultSkip').addEventListener('click', skipCurrent);
-$('resultJira').addEventListener('click', (e) => {
-  if (e.metaKey || e.ctrlKey) return;
-  e.preventDefault();
-  openCurrentBoard();
-});
-$('nowJira').addEventListener('click', openCurrentBoard);
 $('nowDone').addEventListener('click', () => markDone(state.current));
 $('teamBtn').addEventListener('click', toggleTeam);
-$('muteBtn').addEventListener('click', toggleMute);
+$('settingsBtn').addEventListener('click', () => toggleSettings());
+$('settingsDone').addEventListener('click', () => toggleSettings(false));
+$('soundToggle').addEventListener('click', toggleMute);
 $('resetBtn').addEventListener('click', reset);
 
 if (EMBEDDED) {
@@ -563,7 +629,6 @@ if (EMBEDDED) {
   // The overlay tells us when we're minimised to just the header bar.
   addEventListener('message', (e) => {
     if (e.source !== window.parent || e.data?.source !== 'dsu-overlay') return;
-    if (e.data.toast) { showToast(e.data.toast); return; }
     const min = !!e.data.min;
     const nextLayout = e.data.mode === 'big' ? 'big' : 'dock';
     if (nextLayout !== layout) { layout = nextLayout; render({ keepWheel: true }); }
@@ -601,13 +666,18 @@ if (EMBEDDED) {
 
 document.addEventListener('keydown', (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (settingsOpen) {
+    if (e.key === 'Escape') { e.preventDefault(); toggleSettings(false); }
+    else if (e.key.toLowerCase() === 'm' && !e.target.closest('input')) toggleMute();
+    return;
+  }
   const cur = state.current && byId[state.current];
   const k = e.key.toLowerCase();
   if (e.code === 'Space') { e.preventDefault(); spin(); }
+  else if (e.key === 'Enter' && resultOpen()) { e.preventDefault(); startCurrent(); }
   else if (e.key === 'Enter' && cur) { e.preventDefault(); markDone(cur.id); }
-  else if (e.key === 'Escape' && resultOpen()) { hideResult(); render({ keepWheel: true }); }
+  else if (e.key === 'Escape' && resultOpen()) startCurrent();
   else if (e.key === 'Escape' && EMBEDDED) post({ type: 'close' });
-  else if (k === 'j' && cur) openCurrentBoard();
   else if (k === 's' && cur) skipCurrent();
   else if (k === 'm') toggleMute();
   else if (k === 't') toggleTeam();

@@ -19,20 +19,22 @@ To share it, zip this folder and have people do the same steps.
 - On pages where extensions can't run (new tab, `chrome://`), it opens in its own tab instead.
 - You can also grab the wheel. Flick it and it spins at that speed, slowing down on its own.
   Drag it slowly and let go to pick whoever is under the pointer.
-- Space spins. Once someone is up, Space again marks them done and spins for the next person.
-- "Not here" takes that person off for today and spins again straight away. "Done" doesn't spin.
-- Click a name, or "Open board", to filter the board behind the panel to that person. The extension
-  clicks their avatar in the board's assignee filter, so on the same board nothing reloads. On a
-  different board it loads that board first. If someone has nothing on the board, the panel says so.
-  Chris and Casey have a small second link for their other board. Cmd-click opens a new tab.
+- Space spins. When the wheel stops, the popup shows who's up:
+  - "Start" (or Enter) closes the popup and they start talking. "Done" under the wheel, Enter, or
+    Space marks them done. Space also spins for the next person.
+  - "Skip" (or S) takes them off for today and spins again straight away.
 - The switch next to a squad name (GenAI Productivity, iTools) turns the whole squad off or on for today.
 - The switch next to each name marks them away for today. The number next to a name is their
   speaking order. Click it to put them back on the wheel.
-- T shows or hides the team list, M mutes, J opens the current person's board, S skips them.
+- T shows or hides the team list, M mutes.
 - When everyone has had a turn, a "That's all for today" sign hangs off the pointer.
 - Progress resets the next day, or with the reset button.
 
 ## Change the team
 
-Edit `team.js`, then press the reload icon on the extension's card in `chrome://extensions`.
-Jira account IDs can be found with the assignee filter on either board (the `assignee=` value in the URL).
+Click the settings button in the header (the sliders icon). Type a name under a squad and press Enter
+to add them, or click the × next to someone to remove them. Changes are saved in the extension
+and show up in every open spinner.
+
+`team.js` holds the starting team, used until the first change in settings. Squads can only be
+changed there: edit it, then press the reload icon on the extension's card in `chrome://extensions`.
