@@ -1,7 +1,7 @@
 // Starting team for the Productivity Engineering DSU, taken from the
 // "Productivity Engineering Standup" calendar invite.
-// The PM adds and removes people in the spinner's settings; once they do, the team is
-// saved in the extension and this list isn't used any more. Squads can only be changed here.
+// The PM manages people and squads in the spinner's settings; after the first change the
+// team is saved in the extension and these lists aren't used any more.
 
 export const SQUADS = [
   { id: 'genai', name: 'GenAI Productivity' },

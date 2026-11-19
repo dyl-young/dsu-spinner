@@ -36,5 +36,7 @@ Click the settings button in the header (the sliders icon). Type a name under a 
 to add them, or click the × next to someone to remove them. Changes are saved in the extension
 and show up in every open spinner.
 
-`team.js` holds the starting team, used until the first change in settings. Squads can only be
-changed there: edit it, then press the reload icon on the extension's card in `chrome://extensions`.
+Squads are managed there too. Click a squad's name to rename it, use "Add a team" at the bottom for
+a new one, or the bin icon to remove one. Removing a squad removes its people as well, so it asks first.
+
+`team.js` holds the starting team and squads, used until the first change in settings.

@@ -209,6 +209,20 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--faint); outline
   border: 1px solid var(--hover); border-radius: 8px;
   background: var(--panel); color: var(--text); font: inherit; font-size: 15px;
 }
+.squad-title {
+  flex: 1; min-width: 0; height: 26px; margin-left: -6px; padding: 0 6px;
+  border: 0; border-radius: 6px; background: none;
+  color: var(--muted); font: inherit; font-size: 13px; font-weight: 600; text-overflow: ellipsis;
+}
+.squad-title:hover { background: var(--panel); }
+.squad-title:focus { outline: none; background: var(--panel); color: var(--text); }
+.squad-confirm {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px;
+  min-height: 30px; padding: 0 0 0 8px; margin-bottom: 2px; font-size: 13px; color: var(--text);
+}
+.squad-confirm span { margin-right: auto; }
+.text-btn.danger { color: oklch(0.72 0.13 25); font-weight: 600; }
+.settings-new-squad { max-width: 340px; margin-top: 24px; }
 .add-person input::placeholder { color: var(--faint); }
 .add-person input:focus { outline: none; border-color: var(--faint); }
 

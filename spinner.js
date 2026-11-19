@@ -33,10 +33,17 @@ const EMBEDDED = window.top !== window;
 // 'dock' for the small docked/floating panel, 'big' for the expanded panel or a full tab.
 let layout = EMBEDDED ? 'dock' : 'big';
 const teamOpen = () => !!state.teamOpen?.[layout];
+let squads = [];
 let people = [];
 let byId = {};
+function setTeam(team) {
+  // Saved before squads could be edited: just the people, on the starting squads.
+  if (Array.isArray(team)) team = { squads: SQUADS, people: team };
+  squads = (team?.squads ?? SQUADS).map((s) => ({ ...s }));
+  setPeople(team?.people ?? DEFAULT_TEAM);
+}
 function setPeople(list) {
-  people = list.filter((p) => SQUADS.some((s) => s.id === p.squad)).map((p) => ({ ...p }));
+  people = list.filter((p) => squads.some((s) => s.id === p.squad)).map((p) => ({ ...p }));
   byId = Object.fromEntries(people.map((p) => [p.id, p]));
 }
 
@@ -76,19 +83,22 @@ function pruneState() {
 
 async function load() {
   const [saved, team] = await Promise.all([store.get(STATE_KEY), store.get(TEAM_KEY)]);
-  setPeople(Array.isArray(team) ? team : DEFAULT_TEAM);
+  setTeam(team);
   state = saved && saved.date === todayKey() ? { ...freshState(saved), ...saved } : freshState(saved || {});
   pruneState();
 }
 const save = () => store.set(STATE_KEY, state);
-const saveTeam = () => store.set(TEAM_KEY, people.map(({ id, name, squad }) => ({ id, name, squad })));
+const saveTeam = () => store.set(TEAM_KEY, {
+  squads: squads.map(({ id, name }) => ({ id, name })),
+  people: people.map(({ id, name, squad }) => ({ id, name, squad })),
+});
 
 if (hasChromeStorage) {
   // Keep spinners open in other tabs in sync.
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
     if (changes[TEAM_KEY]) {
-      setPeople(changes[TEAM_KEY].newValue || DEFAULT_TEAM);
+      setTeam(changes[TEAM_KEY].newValue);
       if (settingsOpen) renderSettings();
     }
     if (spinning || (!changes[TEAM_KEY] && !changes[STATE_KEY])) return;
@@ -433,7 +443,7 @@ function render({ keepWheel = false } = {}) {
 function renderRoster() {
   const root = $('roster');
   root.textContent = '';
-  for (const squad of SQUADS) {
+  for (const squad of squads) {
     const members = people.filter((p) => p.squad === squad.id);
     if (!members.length) continue;
     const col = document.createElement('div');
@@ -522,16 +532,24 @@ function toggleSettings(open = !settingsOpen) {
 const slug = (name) => name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
   .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
-function addPerson(name, squad) {
-  const base = slug(name) || 'person';
+function uniqueId(name, fallback, taken) {
+  const base = slug(name) || fallback;
   let id = base;
-  for (let n = 2; byId[id]; n++) id = `${base}-${n}`;
+  for (let n = 2; taken(id); n++) id = `${base}-${n}`;
+  return id;
+}
+const cleanName = (s) => s.trim().replace(/\s+/g, ' ');
+const sameName = (a, b) => a.toLowerCase() === b.toLowerCase();
+const squadNamed = (name, except) => squads.find((s) => s.id !== except && sameName(s.name, name));
+
+function addPerson(name, squad) {
+  const id = uniqueId(name, 'person', (x) => !!byId[x]);
   setPeople([...people, { id, name, squad }]);
   saveTeam();
   render();
 }
-function removePerson(id) {
-  setPeople(people.filter((p) => p.id !== id));
+// Whoever is no longer on the team drops out of today's progress too.
+function teamChanged() {
   pruneState();
   if (!state.current) hideResult();
   save();
@@ -539,20 +557,42 @@ function removePerson(id) {
   render();
   renderSettings();
 }
+function removePerson(id) {
+  setPeople(people.filter((p) => p.id !== id));
+  teamChanged();
+}
+
+function addSquad(name) {
+  const id = uniqueId(name, 'team', (x) => squads.some((s) => s.id === x));
+  squads.push({ id, name });
+  saveTeam();
+  renderSettings(id);
+}
+function renameSquad(id, name) {
+  const squad = squads.find((s) => s.id === id);
+  if (!squad || squad.name === name) return;
+  squad.name = name;
+  saveTeam();
+  render();
+}
+function removeSquad(id) {
+  squads = squads.filter((s) => s.id !== id);
+  setPeople(people);
+  teamChanged();
+}
+
+// Squad waiting on "Remove … ?" to be confirmed.
+let confirmingSquad = null;
 
 function renderSettings(focusSquad) {
   const root = $('settingsSquads');
   root.textContent = '';
-  for (const squad of SQUADS) {
+  if (!squads.some((s) => s.id === confirmingSquad)) confirmingSquad = null;
+  for (const squad of squads) {
+    const members = people.filter((x) => x.squad === squad.id);
     const col = document.createElement('div');
-    const head = document.createElement('div');
-    head.className = 'squad-head';
-    const title = document.createElement('span');
-    title.className = 'squad-name';
-    title.textContent = squad.name;
-    head.append(title);
-    col.append(head);
-    for (const p of people.filter((x) => x.squad === squad.id)) {
+    col.append(confirmingSquad === squad.id ? squadConfirm(squad, members.length) : squadHead(squad));
+    for (const p of members) {
       const row = document.createElement('div');
       row.className = 'person';
       const remove = document.createElement('button');
@@ -564,41 +604,109 @@ function renderSettings(focusSquad) {
       row.append(nameLabel(p), remove);
       col.append(row);
     }
-    col.append(addForm(squad));
+    const add = nameForm({
+      placeholder: `Add to ${squad.name}`,
+      maxLength: 24,
+      taken: (name) => people.some((p) => sameName(p.name, name)) && `${name} is already on the team`,
+      onAdd: (name) => { addPerson(name, squad.id); renderSettings(squad.id); },
+    });
+    add.dataset.squad = squad.id;
+    col.append(add);
     root.append(col);
   }
   if (focusSquad) root.querySelector(`[data-squad="${focusSquad}"] input`)?.focus();
 }
 
-function addForm(squad) {
+// Squad name, edited in place, and the button that removes the squad.
+function squadHead(squad) {
+  const head = document.createElement('div');
+  head.className = 'squad-head';
+  const title = document.createElement('input');
+  title.className = 'squad-title';
+  title.value = squad.name;
+  title.maxLength = 32;
+  title.title = 'Rename';
+  title.setAttribute('aria-label', `Rename ${squad.name}`);
+  title.autocomplete = 'off';
+  const commit = () => {
+    const name = cleanName(title.value);
+    if (!name || squadNamed(name, squad.id)) title.value = squad.name;
+    else renameSquad(squad.id, name);
+  };
+  title.onchange = commit;
+  title.onkeydown = (e) => {
+    e.stopPropagation(); // Escape here undoes the rename rather than closing settings
+    if (e.key === 'Enter') title.blur();
+    if (e.key === 'Escape') { title.value = squad.name; title.blur(); }
+  };
+  const remove = document.createElement('button');
+  remove.className = 'remove-btn';
+  remove.title = `Remove ${squad.name}`;
+  remove.setAttribute('aria-label', remove.title);
+  remove.innerHTML = ICON_TRASH;
+  remove.onclick = () => { confirmingSquad = squad.id; renderSettings(); };
+  head.append(title, remove);
+  return head;
+}
+
+function squadConfirm(squad, count) {
+  const box = document.createElement('div');
+  box.className = 'squad-confirm';
+  const text = document.createElement('span');
+  text.textContent = count
+    ? `Remove ${squad.name} and its ${count} ${count === 1 ? 'person' : 'people'}?`
+    : `Remove ${squad.name}?`;
+  const yes = document.createElement('button');
+  yes.className = 'text-btn danger';
+  yes.textContent = 'Remove';
+  yes.onclick = () => { confirmingSquad = null; removeSquad(squad.id); };
+  const no = document.createElement('button');
+  no.className = 'text-btn';
+  no.textContent = 'Cancel';
+  no.onclick = () => { confirmingSquad = null; renderSettings(); };
+  box.append(text, yes, no);
+  requestAnimationFrame(() => no.focus());
+  return box;
+}
+
+function nameForm({ placeholder, button = 'Add', maxLength, taken, onAdd }) {
   const form = document.createElement('form');
   form.className = 'add-person';
-  form.dataset.squad = squad.id;
   const input = document.createElement('input');
-  input.placeholder = `Add to ${squad.name}`;
-  input.setAttribute('aria-label', input.placeholder);
-  input.maxLength = 24;
+  input.placeholder = placeholder;
+  input.setAttribute('aria-label', placeholder);
+  input.maxLength = maxLength;
   input.autocomplete = 'off';
   input.oninput = () => input.setCustomValidity('');
   const add = document.createElement('button');
   add.className = 'text-btn strong';
-  add.textContent = 'Add';
+  add.textContent = button;
   form.append(input, add);
   form.onsubmit = (e) => {
     e.preventDefault();
-    const name = input.value.trim().replace(/\s+/g, ' ');
+    const name = cleanName(input.value);
     if (!name) return;
-    if (people.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
-      input.setCustomValidity(`${name} is already on the team`);
+    const why = taken(name);
+    if (why) {
+      input.setCustomValidity(why);
       input.reportValidity();
       return;
     }
-    addPerson(name, squad.id);
-    renderSettings(squad.id);
+    input.value = '';
+    onAdd(name);
   };
   return form;
 }
 
+$('settingsNewSquad').append(nameForm({
+  placeholder: 'Add a team',
+  button: 'Add team',
+  maxLength: 32,
+  taken: (name) => squadNamed(name) && `There's already a team called ${name}`,
+  onAdd: addSquad,
+}));
+
+const ICON_TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M9 7V4h6v3"/></svg>';
 const ICON_REMOVE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12"/><path d="M18 6L6 18"/></svg>';
 const ICON_MINIMISE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 12h12"/></svg>';
 const ICON_RESTORE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2.5"/></svg>';
